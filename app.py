@@ -1,66 +1,78 @@
 from flask import Flask, jsonify, request
-import requests, os, json, websocket
+import os, sys, traceback
 
 app = Flask(__name__)
 
-PAT = os.environ.get("DERIV_TOKEN") or os.environ.get("PAT") or os.environ.get("TOKEN")
-APP_ID = os.environ.get("APP_ID", "34izQ97Q8ePS7YhgSZLJe")
-
 @app.route("/")
 def home():
-    return "V15 Live - go to /buy?symbol=R_100&amount=1"
+    return "V15 Live - Debug Mode - go to /debug"
+
+@app.route("/debug")
+def debug():
+    try:
+        import requests, websocket
+        pat = os.environ.get("DERIV_TOKEN") or os.environ.get("PAT") or os.environ.get("TOKEN") or "MISSING"
+        app_id = os.environ.get("APP_ID", "NOT SET")
+        info = {
+            "pat_exists": pat != "MISSING",
+            "pat_length": len(pat) if pat!="MISSING" else 0,
+            "pat_starts_with": pat[:4] if pat!="MISSING" else "NONE",
+            "app_id": app_id,
+            "python_version": sys.version,
+            "can_import_requests": True,
+            "can_import_websocket": True
+        }
+        # try Deriv API
+        headers = {"Authorization": f"Bearer {pat}", "Deriv-App-ID": app_id}
+        r = requests.get("https://api.derivws.com/trading/v1/options/accounts", headers=headers, timeout=10)
+        info["deriv_status"] = r.status_code
+        info["deriv_response"] = r.json()
+        return jsonify(info)
+    except Exception as e:
+        return jsonify({"CRASH": str(e), "trace": traceback.format_exc()})
 
 @app.route("/accounts")
 def accounts():
-    headers = {"Authorization": f"Bearer {PAT}", "Deriv-App-ID": APP_ID}
-    r = requests.get("https://api.derivws.com/trading/v1/options/accounts", headers=headers)
-    return jsonify(r.json())
+    try:
+        import requests
+        pat = os.environ.get("DERIV_TOKEN") or os.environ.get("PAT") or os.environ.get("TOKEN")
+        if not pat:
+            return jsonify({"error": "DERIV_TOKEN missing in Render Environment"})
+        app_id = os.environ.get("APP_ID", "34izQ97Q8ePS7YhgSZLJe")
+        headers = {"Authorization": f"Bearer {pat}", "Deriv-App-ID": app_id}
+        r = requests.get("https://api.derivws.com/trading/v1/options/accounts", headers=headers, timeout=15)
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({"error": str(e), "trace": traceback.format_exc()})
 
 @app.route("/buy")
 def buy():
-    symbol = request.args.get("symbol", "R_100")
-    amount = float(request.args.get("amount", "1"))
-    headers = {"Authorization": f"Bearer {PAT}", "Deriv-App-ID": APP_ID}
+    try:
+        import requests, websocket, json
+        pat = os.environ.get("DERIV_TOKEN") or os.environ.get("PAT") or os.environ.get("TOKEN")
+        if not pat:
+            return jsonify({"error": "DERIV_TOKEN missing"})
+        app_id = os.environ.get("APP_ID", "34izQ97Q8ePS7YhgSZLJe")
+        headers = {"Authorization": f"Bearer {pat}", "Deriv-App-ID": app_id}
+        
+        accts = requests.get("https://api.derivws.com/trading/v1/options/accounts", headers=headers, timeout=10).json()
+        data = accts.get("data", [])
+        demo_id = "DOT84422096"
+        if not data:
+            return jsonify({"error": "no accounts returned", "raw": accts})
+        
+        otp = requests.post(f"https://api.derivws.com/trading/v1/options/accounts/{demo_id}/otp", headers=headers, timeout=10).json()
+        ws_url = otp.get("data", {}).get("url")
+        if not ws_url:
+            return jsonify({"error": "no ws_url", "otp": otp})
 
-    # Get accounts
-    accts_resp = requests.get("https://api.derivws.com/trading/v1/options/accounts", headers=headers).json()
-    data = accts_resp.get("data", [])
-
-    # FIXED: pick DOT84422096 demo first
-    demo_id = None
-    for a in data:
-        if a.get("account_id") == "DOT84422096":
-            demo_id = a["account_id"]
-            break
-    if not demo_id:
-        for a in data:
-            if "demo" in str(a.get("account_type","")).lower():
-                demo_id = a["account_id"]
-                break
-    if not demo_id and data:
-        demo_id = data[0]["account_id"]
-
-    # Get WS url
-    otp_resp = requests.post(f"https://api.derivws.com/trading/v1/options/accounts/{demo_id}/otp", headers=headers).json()
-    ws_url = otp_resp["data"]["url"]
-
-    ws = websocket.create_connection(ws_url)
-    ws.send(json.dumps({
-        "proposal": 1, "amount": amount, "basis": "stake",
-        "contract_type": "CALL", "currency": "USD",
-        "duration": 1, "duration_unit": "m",
-        "underlying_symbol": symbol
-    }))
-    prop = json.loads(ws.recv())
-    if "error" in prop:
+        ws = websocket.create_connection(ws_url, timeout=10)
+        ws.send(json.dumps({"proposal": 1, "amount": 1, "basis": "stake", "contract_type": "CALL", "currency": "USD", "duration": 1, "duration_unit": "m", "underlying_symbol": "R_100"}))
+        prop = json.loads(ws.recv())
         ws.close()
-        return jsonify({"account_used": demo_id, "error": prop})
-
-    pid = prop["proposal"]["id"]
-    ws.send(json.dumps({"buy": pid, "price": amount}))
-    buy_result = json.loads(ws.recv())
-    ws.close()
-    return jsonify({"account_used": demo_id, "balance": "10005.59", "proposal": prop, "buy": buy_result})
+        return jsonify({"account_used": demo_id, "proposal": prop, "ws_url_ok": True})
+    except Exception as e:
+        return jsonify({"BUY_CRASH": str(e), "trace": traceback.format_exc()})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
