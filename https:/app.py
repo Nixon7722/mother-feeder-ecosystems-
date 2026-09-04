@@ -1,7 +1,7 @@
 import streamlit as st, requests, json, websocket, pandas as pd
 
-st.set_page_config(page_title="MOTHER V8", layout="wide")
-st.title("🧠 MOTHER V8 - CLOSE FIXED")
+st.set_page_config(page_title="MOTHER V9", layout="wide")
+st.title("🧠 MOTHER V9 - PROFIT VIEW")
 
 TOKEN = st.secrets.get("DERIV_TOKEN", "")
 APP_ID = st.secrets.get("DERIV_APP_ID", "34iR6HMxOfgO6m5LWOrAp")
@@ -9,6 +9,8 @@ ACCOUNT_ID = "DOT94422096"
 
 if "contracts" not in st.session_state:
     st.session_state.contracts = []
+if "tx" not in st.session_state:
+    st.session_state.tx = []
 
 def get_otp(account_id):
     headers = {"Authorization": f"Bearer {TOKEN}", "Deriv-App-ID": APP_ID}
@@ -22,10 +24,7 @@ def ws_req(otp_url, payload):
     ws.close()
     return resp
 
-if st.button("🔴 CONNECT & GET OTP", type="primary"):
-    otp = get_otp(ACCOUNT_ID)
-    st.success(f"✅ CONNECTED: {otp[:40]}...")
-    st.balloons()
+st.success("✅ App ready")
 
 tab1, tab2, tab3 = st.tabs(["🎯 TRADE", "📊 PROFIT TABLE", "📈 OPEN"])
 
@@ -51,27 +50,38 @@ with tab2:
     if st.button("Load Profit Table", key="pt"):
         otp = get_otp(ACCOUNT_ID)
         resp = ws_req(otp, {"profit_table":1,"description":1,"limit":25,"sort":"DESC"})
-        tx = resp.get("profit_table",{}).get("transactions",[])
-        if tx:
-            df = pd.DataFrame(tx)
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.json(resp)
+        st.session_state.tx = resp.get("profit_table",{}).get("transactions",[])
+    
+    if st.session_state.tx:
+        # Clean display for mobile
+        for t in st.session_state.tx[:10]:
+            buy = t.get('buy_price',0)
+            sell = t.get('sell_price',0)
+            pl = sell - buy if sell and buy else t.get('profit_loss',0)
+            color = "🟢" if pl>0 else "🔴"
+            st.write(f"{color} **{t.get('contract_id')}** | Buy ${buy} -> Sell ${sell} | **P/L ${pl:.2f}**")
+        
+        df = pd.DataFrame(st.session_state.tx)
+        # Show total
+        try:
+            df['pl_calc'] = df['sell_price'].astype(float) - df['buy_price'].astype(float)
+            total = df['pl_calc'].sum()
+            st.metric("Total P/L (25 trades)", f"${total:.2f}", delta=f"{total:.2f}")
+        except:
+            pass
+        st.dataframe(df[['contract_id','buy_price','sell_price','transaction_type']], use_container_width=True)
 
 with tab3:
     if st.button("Load Open Positions", key="op"):
         otp = get_otp(ACCOUNT_ID)
         resp = ws_req(otp, {"portfolio":1})
         st.session_state.contracts = resp.get("portfolio",{}).get("contracts",[])
-        st.json(resp)
-
-    # Show stored contracts even after reload
-    if st.session_state.contracts:
-        contracts = st.session_state.contracts
-        st.write(f"### {len(contracts)} OPEN")
-        for c in contracts:
-            st.code(f"ID {c.get('contract_id')} | {c.get('underlying_symbol')} | Buy ${c.get('buy_price')} | {c.get('contract_type')}")
     
+    if st.session_state.contracts:
+        st.write(f"### {len(st.session_state.contracts)} OPEN")
+        for c in st.session_state.contracts:
+            st.code(f"ID {c.get('contract_id')} | {c.get('underlying_symbol')} | Buy ${c.get('buy_price')}")
+
     if st.session_state.contracts:
         if st.button("🔴 CLOSE ALL OPEN NOW", type="primary", key="close_all"):
             for c in st.session_state.contracts:
@@ -81,8 +91,9 @@ with tab3:
                     ws.send(json.dumps({"sell": c["contract_id"], "price": 0}))
                     resp = json.loads(ws.recv())
                     ws.close()
-                    st.write(f"✅ Closed {c['contract_id']}: {resp.get('sell',{}).get('sold_for', resp)}")
+                    sold = resp.get('sell',{}).get('sold_for', 'closed')
+                    st.write(f"✅ Closed {c['contract_id']}: ${sold}")
                 except Exception as e:
                     st.error(f"Failed {c['contract_id']}: {e}")
             st.session_state.contracts = []
-            st.success("Done! All closed. Check Profit Table.")
+            st.success("Done! Check Profit Table.")
