@@ -1,136 +1,93 @@
-import streamlit as st, requests, json, time, websocket, threading, pandas as pd
+import streamlit as st, requests, json, websocket, pandas as pd
 from datetime import datetime
 
-st.set_page_config(page_title="MOTHER V4 REAL", layout="wide", page_icon="🧠")
-st.title("🧠 MOTHER V4 - REAL MULTIPLIERS BOT")
+st.set_page_config(page_title="MOTHER V5", layout="wide")
+st.title("🧠 MOTHER V5 - REAL BOT + PROFIT TABLE")
 
-# --- SECRETS ---
 TOKEN = st.secrets.get("DERIV_TOKEN", "")
 APP_ID = st.secrets.get("DERIV_APP_ID", "34iR6HMxOfgO6m5LWOrAp")
-ACCOUNT_ID = "DOT94422096" # from your screenshot, we will auto-detect anyway
 
-if "connected" not in st.session_state:
-    st.session_state.connected = False
+if "otp_url" not in st.session_state:
     st.session_state.otp_url = ""
-    st.session_state.accounts = []
-
-# --- SIDEBAR SETTINGS ---
-with st.sidebar:
-    st.header("⚙️ MOTHER SETTINGS")
-    symbol = st.selectbox("Symbol", ["1HZ100V", "1HZ10V", "R_100", "R_10", "BOOM1000"], index=0)
-    stake = st.number_input("Stake $", 1.0, 100.0, 1.0)
-    multiplier = st.number_input("Multiplier", 10, 1000, 40)
-    sl = st.number_input("Stop Loss $", 0.5, 100.0, 0.5)
-    tp = st.number_input("Take Profit $", 0.5, 100.0, 1.0)
-    ema_fast = st.slider("EMA Fast", 3, 20, 5)
-    ema_slow = st.slider("EMA Slow", 10, 50, 20)
+    st.session_state.account_id = "DOT94422096"
 
 def get_accounts():
     headers = {"Authorization": f"Bearer {TOKEN}", "Deriv-App-ID": APP_ID}
     r = requests.get("https://api.derivws.com/trading/v1/options/accounts", headers=headers, timeout=20)
-    r.raise_for_status()
     return r.json().get("data", [])
 
-def get_otp_url(account_id):
+def get_otp(account_id):
     headers = {"Authorization": f"Bearer {TOKEN}", "Deriv-App-ID": APP_ID}
-    url = f"https://api.derivws.com/trading/v1/options/accounts/{account_id}/otp"
-    r = requests.post(url, headers=headers, timeout=20)
-    r.raise_for_status()
+    r = requests.post(f"https://api.derivws.com/trading/v1/options/accounts/{account_id}/otp", headers=headers, timeout=20)
     return r.json()["data"]["url"]
 
-def place_trade(otp_ws_url, symbol, stake, multiplier, sl, tp, direction="MULTUP"):
-    # direction: MULTUP or MULTDOWN
-    logs = []
-    try:
-        ws = websocket.create_connection(otp_ws_url, timeout=20)
-        # Proposal
-        proposal = {
-            "proposal": 1,
-            "amount": float(stake),
-            "basis": "stake",
-            "contract_type": direction,
-            "currency": "USD",
-            "multiplier": int(multiplier),
-            "underlying_symbol": symbol,
-            "limit_order": {"stop_loss": float(sl), "take_profit": float(tp)}
-        }
-        ws.send(json.dumps(proposal))
-        resp = json.loads(ws.recv())
-        logs.append(f"Proposal: {resp}")
-        
-        if "proposal" in resp and "id" in resp["proposal"]:
-            buy = {"buy": resp["proposal"]["id"], "price": float(stake)}
-            ws.send(json.dumps(buy))
-            buy_resp = json.loads(ws.recv())
-            logs.append(f"Buy: {buy_resp}")
-            ws.close()
-            return True, buy_resp, logs
-        else:
-            ws.close()
-            return False, resp, logs
-    except Exception as e:
-        return False, str(e), logs
+def ws_request(otp_url, payload):
+    ws = websocket.create_connection(otp_url, timeout=15)
+    ws.send(json.dumps(payload))
+    resp = json.loads(ws.recv())
+    ws.close()
+    return resp
 
 # --- CONNECT ---
-col1, col2 = st.columns(2)
-with col1:
-    if st.button("🔴 CONNECT & GET OTP", type="primary"):
-        try:
-            accs = get_accounts()
-            if not accs:
-                st.error("No accounts found")
-            else:
-                st.session_state.accounts = accs
-                # use first active account (DOT94422096)
-                target = accs[0]["account_id"]
-                for a in accs:
-                    if a["account_id"] == ACCOUNT_ID:
-                        target = a["account_id"]
-                        break
-                otp_url = get_otp_url(target)
-                st.session_state.otp_url = otp_url
-                st.session_state.connected = True
-                st.session_state.account_id = target
-                st.success(f"✅ CONNECTED TO {target}")
-                st.balloons()
-        except Exception as e:
-            st.error(f"Connect failed: {e}")
+if st.button("🔴 CONNECT & GET OTP", type="primary"):
+    accs = get_accounts()
+    otp = get_otp(st.session_state.account_id)
+    st.session_state.otp_url = otp
+    st.success(f"✅ CONNECTED OTP: {otp[:50]}...")
+    st.balloons()
 
-with col2:
-    if st.session_state.connected:
-        st.success(f"🟢 READY: {st.session_state.account_id} | OTP Ready")
-        st.write(f"Balance from screenshot: $10006.04")
-    else:
-        st.warning("Not connected - click CONNECT")
+# --- TABS ---
+tab1, tab2, tab3 = st.tabs(["🎯 TRADE", "📊 PROFIT TABLE", "📈 OPEN POSITIONS"])
 
-# --- SHOW ACCOUNTS ---
-if st.session_state.accounts:
-    st.dataframe(pd.DataFrame(st.session_state.accounts))
-
-# --- MANUAL TRADE ---
-st.divider()
-st.subheader("🎯 REAL TRADE - MULTIPLIERS")
-c1, c2 = st.columns(2)
-with c1:
-    if st.button("🚀 BUY MULTUP (Up)", disabled=not st.session_state.connected):
-        ok, resp, logs = place_trade(st.session_state.otp_url, symbol, stake, multiplier, sl, tp, "MULTUP")
-        if ok:
-            st.success(f"✅ TRADE OPENED! {resp}")
-            # Need new OTP after each trade
-            st.session_state.otp_url = get_otp_url(st.session_state.account_id)
+with tab1:
+    col1, col2 = st.columns(2)
+    symbol = st.selectbox("Symbol", ["1HZ100V", "1HZ10V", "R_100"], key="sym")
+    stake = st.number_input("Stake $", 1.0, 100.0, 1.0, key="stake")
+    mult = st.number_input("Multiplier", 10, 1000, 40, key="mult")
+    sl = st.number_input("SL $", 0.5, 100.0, 0.5, key="sl")
+    tp = st.number_input("TP $", 0.5, 100.0, 1.0, key="tp")
+    
+    if st.button("🚀 BUY MULTUP"):
+        if not st.session_state.otp_url:
+            st.error("Connect first!")
         else:
-            st.error(f"Failed: {resp}")
-        st.json(logs)
+            otp = st.session_state.otp_url
+            # Proposal
+            prop = {"proposal": 1, "amount": stake, "basis": "stake", "contract_type": "MULTUP", "currency": "USD", "multiplier": mult, "underlying_symbol": symbol, "limit_order": {"stop_loss": sl, "take_profit": tp}}
+            r1 = ws_request(otp, prop)
+            st.json(r1)
+            if "proposal" in r1:
+                # Need new OTP for buy (OTP is one-time? Actually re-use but safer new)
+                otp2 = get_otp(st.session_state.account_id)
+                st.session_state.otp_url = otp2
+                buy = {"buy": r1["proposal"]["id"], "price": stake}
+                r2 = ws_request(otp2, buy)
+                st.success(f"TRADE OPENED! Contract: {r2.get('buy', {}).get('contract_id')}")
+                st.json(r2)
+                # refresh OTP again
+                st.session_state.otp_url = get_otp(st.session_state.account_id)
 
-with c2:
-    if st.button("🔻 BUY MULTDOWN (Down)", disabled=not st.session_state.connected):
-        ok, resp, logs = place_trade(st.session_state.otp_url, symbol, stake, multiplier, sl, tp, "MULTDOWN")
-        if ok:
-            st.success(f"✅ TRADE OPENED! {resp}")
-            st.session_state.otp_url = get_otp_url(st.session_state.account_id)
+with tab2:
+    st.subheader("📊 Your Profit Table - Last 25 trades")
+    if st.button("Load Profit Table"):
+        if not st.session_state.otp_url:
+            st.error("Connect first!")
         else:
-            st.error(f"Failed: {resp}")
-        st.json(logs)
+            otp = get_otp(st.session_state.account_id)
+            payload = {"profit_table": 1, "description": 1, "limit": 25, "sort": "DESC"}
+            resp = ws_request(otp, payload)
+            st.json(resp)
+            if "profit_table" in resp:
+                df = pd.DataFrame(resp["profit_table"]["transactions"])
+                st.dataframe(df)
+                total = df["sell_price"].astype(float).sum() - df["buy_price"].astype(float).sum() if "sell_price" in df.columns else 0
+                st.metric("Total P/L (approx)", f"${total:.2f}")
 
-st.divider()
-st.caption(f"App ID: {APP_ID} | Token: pat_...{TOKEN[-6:]} | {datetime.now()} | Kisumu, KE")
+with tab3:
+    st.subheader("📈 Open Positions")
+    if st.button("Load Open Positions"):
+        otp = get_otp(st.session_state.account_id)
+        resp = ws_request(otp, {"portfolio": 1})
+        st.json(resp)
+
+st.caption(f"Account: {st.session_state.account_id} | App: {APP_ID} | {datetime.now()}")
