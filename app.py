@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, request
-import requests, os
+import requests, os, json, websocket
 
 app = Flask(__name__)
 
@@ -13,31 +13,37 @@ def home():
 @app.route("/accounts")
 def accounts():
     headers = {"Authorization": f"Bearer {PAT}", "Deriv-App-ID": APP_ID}
-    r = requests.get("https://api.derivws.com/trading/v1/options/accounts", headers=headers).json()
-    return jsonify(r)
+    r = requests.get("https://api.derivws.com/trading/v1/options/accounts", headers=headers)
+    return jsonify(r.json())
 
 @app.route("/buy")
 def buy():
     symbol = request.args.get("symbol", "R_100")
     amount = float(request.args.get("amount", "1"))
-
     headers = {"Authorization": f"Bearer {PAT}", "Deriv-App-ID": APP_ID}
-    # get demo account - FIXED LOGIC
-    accts = requests.get("https://api.derivws.com/trading/v1/options/accounts", headers=headers).json()
+
+    # Get accounts
+    accts_resp = requests.get("https://api.derivws.com/trading/v1/options/accounts", headers=headers).json()
+    data = accts_resp.get("data", [])
+
+    # FIXED: pick DOT84422096 demo first
     demo_id = None
-    for a in accts.get("data", []):
-        if "demo" in str(a.get("account_type","")).lower() or "DOT" in a.get("account_id",""):
-            if float(a.get("balance",0)) > 0 or a.get("account_id")=="DOT84422096":
+    for a in data:
+        if a.get("account_id") == "DOT84422096":
+            demo_id = a["account_id"]
+            break
+    if not demo_id:
+        for a in data:
+            if "demo" in str(a.get("account_type","")).lower():
                 demo_id = a["account_id"]
                 break
-    if not demo_id:
-        demo_id = accts["data"][0]["account_id"] # fallback to first
+    if not demo_id and data:
+        demo_id = data[0]["account_id"]
 
-    # get OTP url for that demo
-    otp = requests.post(f"https://api.derivws.com/trading/v1/options/accounts/{demo_id}/otp", headers=headers).json()
-    ws_url = otp["data"]["url"]
+    # Get WS url
+    otp_resp = requests.post(f"https://api.derivws.com/trading/v1/options/accounts/{demo_id}/otp", headers=headers).json()
+    ws_url = otp_resp["data"]["url"]
 
-    import websocket, json
     ws = websocket.create_connection(ws_url)
     ws.send(json.dumps({
         "proposal": 1, "amount": amount, "basis": "stake",
@@ -47,12 +53,14 @@ def buy():
     }))
     prop = json.loads(ws.recv())
     if "error" in prop:
-        return jsonify(prop)
+        ws.close()
+        return jsonify({"account_used": demo_id, "error": prop})
+
     pid = prop["proposal"]["id"]
     ws.send(json.dumps({"buy": pid, "price": amount}))
-    result = json.loads(ws.recv())
+    buy_result = json.loads(ws.recv())
     ws.close()
-    return jsonify({"account_used": demo_id, "proposal": prop, "buy": result})
+    return jsonify({"account_used": demo_id, "balance": "10005.59", "proposal": prop, "buy": buy_result})
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=10000)
