@@ -1,3 +1,10 @@
+streamlit
+numpy
+pandas
+scikit-learn
+folium
+streamlit-folium
+plotly
 gunicorn
 flask
 flask-cors
