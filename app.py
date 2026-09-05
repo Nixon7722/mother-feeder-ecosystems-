@@ -1,80 +1,62 @@
-import streamlit as st, requests, json, websocket, time, pandas as pd
+import streamlit as st, json, websocket, time, pandas as pd
 from datetime import datetime
-st.set_page_config(page_title='MOTHER V14.5',layout='wide')
-st.title('MOTHER V14.5 - FIXED PAT')
-
+st.set_page_config(page_title='MOTHER V14.6',layout='wide')
+st.title('MOTHER V14.6 - PAT DIRECT')
 TOKEN=st.secrets.get('DERIV_TOKEN','')
 APP_ID=st.secrets.get('DERIV_APP_ID','1089')
-AID='DOT94422096'
-
-def otp_url():
+WS_URL=f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
+def ws_call(req):
  try:
-  h={'Authorization':f'Bearer {TOKEN}','Deriv-App-ID':APP_ID,'Content-Type':'application/json'}
-  u=f'https://api.derivws.com/trading/v1/options/accounts/{AID}/otp'
-  r=requests.post(u,headers=h,timeout=20)
-  # DEBUG: if not json, show error
-  if 'application/json' not in r.headers.get('Content-Type',''):
-   st.error(f"Deriv API Error: {r.status_code} {r.text[:500]}")
-   return None
-  data=r.json()
-  return data['data']['url']
+  ws=websocket.create_connection(WS_URL,timeout=15)
+  ws.send(json.dumps({"authorize":TOKEN}))
+  auth=json.loads(ws.recv())
+  if 'error' in auth:
+   st.error(f"Auth: {auth['error']['message']}")
+   ws.close()
+   return {}
+  ws.send(json.dumps(req))
+  r=json.loads(ws.recv())
+  ws.close()
+  return r
  except Exception as e:
-  st.error(f"otp_url failed: {e}")
-  return None
-
-def ws(p):
- u=otp_url()
- if not u:
+  st.error(f"WS: {e}")
   return {}
- w=websocket.create_connection(u,timeout=15)
- w.send(json.dumps(p))
- r=json.loads(w.recv())
- w.close()
- return r
-
 def candles(sym):
  try:
-  u=otp_url()
-  if not u: return pd.DataFrame()
-  w=websocket.create_connection(u,timeout=15)
-  m={'ticks_history':sym,'style':'candles','granularity':60,'count':100,'end':'latest'}
-  w.send(json.dumps(m))
-  r=json.loads(w.recv())
-  w.close()
+  ws=websocket.create_connection(WS_URL,timeout=15)
+  ws.send(json.dumps({"authorize":TOKEN}))
+  json.loads(ws.recv())
+  ws.send(json.dumps({'ticks_history':sym,'style':'candles','granularity':60,'count':100,'end':'latest'}))
+  r=json.loads(ws.recv())
+  ws.close()
   return pd.DataFrame(r.get('candles',[]))
  except:
   return pd.DataFrame()
-
 def buy(sym,typ):
- pr={'proposal':1,'amount':0.5,'basis':'stake','contract_type':typ,'currency':'USD','multiplier':50,'underlying_symbol':sym,'limit_order':{'stop_loss':0.55,'take_profit':1.5}}
- a=ws(pr)
+ pr={'proposal':1,'amount':0.5,'basis':'stake','contract_type':typ,'currency':'USD','multiplier':50,'symbol':sym,'limit_order':{'stop_loss':0.55,'take_profit':1.5}}
+ a=ws_call(pr)
  if 'proposal' in a:
-  b=ws({'buy':a['proposal']['id'],'price':0.5})
+  b=ws_call({'buy':a['proposal']['id'],'price':0.5})
   return b
  return a
-
 def rsi_calc(df):
  d=df['close'].diff()
  g=d.where(d>0,0).ewm(alpha=1/14).mean()
  l=(-d.where(d<0,0)).ewm(alpha=1/14).mean()
- rs=g/l
- return 100-(100/(1+rs))
-
+ return 100-(100/(1+g/l))
 if 'logs' not in st.session_state:
  st.session_state.logs=[]
  st.session_state.lt=0
-
-st.sidebar.header('V14.5 FIXED')
+st.sidebar.header('V14.6')
 HUNT=['1HZ100V','R_100','R_50','BOOM1000']
 sel=st.sidebar.multiselect('Hunt',HUNT,default=HUNT[:3])
 auto=st.sidebar.checkbox('ENABLE BRAIN',value=False)
 b1=st.empty()
 b2=st.empty()
 b3=st.empty()
-
 if auto:
  for _ in range(10000):
-  prof=ws({'profit_table':1,'description':1,'limit':20,'sort':'DESC'}).get('profit_table',{}).get('transactions',[])
+  prof=ws_call({'profit_table':1,'description':1,'limit':20,'sort':'DESC'}).get('profit_table',{}).get('transactions',[])
   total=sum(float(x.get('sell_price',0)or 0)-float(x.get('buy_price',0)or 0) for x in prof)
   best=None
   scan=''
@@ -94,7 +76,7 @@ if auto:
   b2.info(scan)
   ts=time.time()
   can=(ts-st.session_state.lt)>85
-  port=ws({'portfolio':1}).get('portfolio',{}).get('contracts',[])
+  port=ws_call({'portfolio':1}).get('portfolio',{}).get('contracts',[])
   if best and len(port)<2 and can:
    r=buy(best['sym'],best['sig'])
    cid=r.get('buy',{}).get('contract_id','?')
