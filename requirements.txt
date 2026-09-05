@@ -1,4 +1,4 @@
-streamlit
-websocket-client
-pandas
+Flask
 requests
+websocket-client
+gunicorn
